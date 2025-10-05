@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import dayjs from 'dayjs';
-import { MapContainer, TileLayer, LayersControl } from 'react-leaflet';
+import { MapContainer, TileLayer, LayersControl, useMapEvents} from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 
 const { BaseLayer, Overlay } = LayersControl;
@@ -30,8 +30,131 @@ function gibsUrl(layerId, date, ext = 'png') {
 // FEMA NFHL (U.S.-only) tiled map service (Web Mercator)
 const FEMA_NFHL = 'https://tiles.arcgis.com/tiles/hGdibHYSPO59RG1h/arcgis/rest/services/FEMA_National_Flood_Hazard_Layer/MapServer/tile/{z}/{y}/{x}';
 
+// --- TTS: translations for "THIS IS A TEST EMERGENCY"
+const EMERGENCY_PHRASE = {
+  en: "THIS IS A TEST EMERGENCY",
+  es: "ESTA ES UNA EMERGENCIA DE PRUEBA",
+  zh: "这是一条测试紧急通知",
+  hi: "यह एक परीक्षण आपातकाल है",
+  ar: "هذه حالة طوارئ تجريبية",
+  fr: "Ceci est une alerte d’urgence de test",
+  vi: "ĐÂY LÀ TÌNH HUỐNG KHẨN CẤP THỬ NGHIỆM",
+  pt: "ISTO É UMA EMERGÊNCIA DE TESTE",
+  ru: "ЭТО ТЕСТОВОЕ ЧРЕЗВЫЧАЙНОЕ СООБЩЕНИЕ",
+  ja: "これはテスト緊急放送です",
+  ko: "이것은 시험 비상 안내입니다",
+  de: "DIES IST EINE TEST-NOTFALLMELDUNG",
+  tl: "ITO AY ISANG PAGSUSUBOK NA EMERHENSIYA",  // Tagalog/Filipino
+  ur: "یہ ایک آزمائشی ہنگامی صورتحال ہے",
+  fa: "این یک وضعیت اضطراری آزمایشی است",
+  tr: "BU BİR DENEME ACİL DURUMU",
+  it: "QUESTO È UN’EMERGENZA DI PROVA",
+  pl: "TO JEST TESTOWY ALARM",
+  nl: "Dit is een test-noodmelding",
+  pa: "ਇਹ ਇੱਕ ਟੈਸਟ ਐਮਰਜੈਂਸੀ ਹੈ",
+  bn: "এটি একটি পরীক্ষামূলক জরুরি অবস্থা",
+  ta: "இது ஒரு சோதனை அவசர நிலை",
+  te: "ఇది ఒక పరీక్ష అత్యవసర పరిస్థితి",
+  mr: "ही एक चाचणी आपत्कालीन स्थिती आहे",
+};
+
+// Top ~5 languages per country (very rough, demo purposes)
+const COUNTRY_LANGS = {
+  US: ["en","es","zh","vi","ar"],
+  CA: ["en","fr","zh","pa","es"],
+  MX: ["es","en","zh","fr","de"],
+  BR: ["pt","en","es","fr","de"],
+  GB: ["en","pl","pa","ur","ar"],
+  AU: ["en","zh","it","vi","el"],
+  IN: ["hi","en","bn","te","ta"],
+  CN: ["zh","yue","en","ko","ru"],        // yue≈Cantonese; will fall back to zh
+  JP: ["ja","en","zh","ko","pt"],
+  KR: ["ko","en","zh","ja","vi"],
+  FR: ["fr","en","es","ar","pt"],
+  DE: ["de","en","tr","ru","pl"],
+  ES: ["es","en","ca","gl","fr"],
+  IT: ["it","en","fr","es","ro"],
+  PT: ["pt","en","es","fr","uk"],
+  RU: ["ru","en","uk","tt","az"],
+  VN: ["vi","en","zh","fr","ko"],
+  PH: ["tl","en","zh","es","ko"],
+  TR: ["tr","en","ku","ar","fa"],
+  IR: ["fa","az","ku","ps","en"],
+  PK: ["ur","pa","sd","ps","en"],
+  SA: ["ar","en","ur","fa","hi"],
+  NG: ["en","yo","ig","ha","fr"],
+};
+
+// Pick a voice for a lang code (best-effort)
+function pickVoiceFor(langCode, voices) {
+  // Normalize: treat regional tags as startsWith
+  const cand = voices.filter(v => v.lang && v.lang.toLowerCase().startsWith(langCode.toLowerCase()));
+  if (cand.length) return cand[0];
+  // Special cases / fallbacks
+  if (langCode === "yue") return voices.find(v => v.lang?.startsWith("zh")) || null; // Cantonese -> zh
+  if (langCode === "tl")  return voices.find(v => v.lang?.startsWith("fil")) || null; // Tagalog/Filipino
+  return voices.find(v => v.lang?.startsWith("en")) || null;
+}
+
+async function reverseCountryCode(lat, lon) {
+  // Nominatim reverse geocode (country only)
+  const url = `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&zoom=3&addressdetails=1`;
+  const res = await fetch(url, {
+    headers: { "Accept": "application/json" }
+  });
+  const data = await res.json();
+  return (data?.address?.country_code || "").toUpperCase(); // e.g., "US"
+}
+
+async function speakTestEmergencyAt(lat, lon) {
+  const synth = window.speechSynthesis;
+  if (!synth) {
+    alert("Speech Synthesis not supported in this browser.");
+    return;
+  }
+
+  // Ensure voices are loaded (Chrome quirk)
+  await new Promise(resolve => {
+    let tries = 0;
+    const waitVoices = () => {
+      const voices = synth.getVoices();
+      if (voices.length || tries++ > 10) resolve();
+      else setTimeout(waitVoices, 200);
+    };
+    waitVoices();
+  });
+
+  const voices = synth.getVoices();
+  const cc = await reverseCountryCode(lat, lon);
+  const langs = (COUNTRY_LANGS[cc] || ["en","es","fr","ar","zh"]).slice(0, 5);
+
+  // Queue up to 5 utterances
+  langs.forEach(code => {
+    const text = EMERGENCY_PHRASE[code] || EMERGENCY_PHRASE.en;
+    const u = new SpeechSynthesisUtterance(text);
+    const voice = pickVoiceFor(code, voices);
+    if (voice) u.voice = voice;
+    // Slight pacing
+    u.rate = 0.95;
+    u.pitch = 1.0;
+    synth.speak(u);
+  });
+}
+
+function MapClickHandler({ enabled }) {
+  useMapEvents({
+    click: async (e) => {
+      if (!enabled) return;
+      const { lat, lng } = e.latlng;
+      await speakTestEmergencyAt(lat, lng);
+    }
+  });
+  return null;
+}
+
 export default function App() {
   const [date, setDate] = useState(dayjs().subtract(1, 'day').format('YYYY-MM-DD'));
+  const [testMode, setTestMode] = useState(false);
   const [filters, setFilters] = useState({ burning: true, flooding: true });
   const center = useMemo(() => [30.2672, -97.7431], []);
 
@@ -51,6 +174,20 @@ export default function App() {
 
         {/* Risk Type filter */}
         <div style={{marginLeft: 'auto', display: 'flex', gap: 12, alignItems: 'center'}}>
+          <button
+            onClick={() => setTestMode(t => !t)}
+            style={{
+              marginLeft: 12,
+              padding: '6px 10px',
+              borderRadius: 6,
+              border: '1px solid #bbb',
+              background: testMode ? '#ffe8e8' : '#fff'
+            }}
+            title="When enabled, clicking the map will speak a test emergency in common local languages."
+          >
+            {testMode ? '✓ Test Emergency ON' : 'Test Emergency'}
+          </button>
+
           <span style={{fontSize: 12, color: '#555'}}>Risk Type:</span>
           <label style={{display: 'flex', alignItems: 'center', gap: 6}}>
             <input
@@ -72,6 +209,7 @@ export default function App() {
       {/* Map */}
       <div style={{flex: 1}}>
         <MapContainer center={center} zoom={5} style={{height: '100%', width: '100%'}}>
+          <MapClickHandler enabled={testMode}/>
           <LayersControl position="topright">
             {/* Base maps */}
             <BaseLayer checked name="OpenStreetMap">
