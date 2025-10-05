@@ -1,8 +1,8 @@
 function HomePage(){
     return (
         <>
-            <h1>Welcome to our website</h1>
-            <p>3D thing</p>
+            <h1>Welcome to our fuck ass website</h1>
+            <p>Fuck Josue</p>
         </>
     )
 }
