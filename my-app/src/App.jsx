@@ -152,11 +152,35 @@ function MapClickHandler({ enabled }) {
   return null;
 }
 
+function ClickRippleLayer({ onClickAtPx, speakEnabled }) {
+  useMapEvents({
+    click: async (e) => {
+      // Always show ripple
+      onClickAtPx(e.containerPoint.x, e.containerPoint.y);
+      // Optionally speak
+      if (speakEnabled) {
+        const { lat, lng } = e.latlng;
+        await speakTestEmergencyAt(lat, lng);
+      }
+    }
+  });
+  return null;
+}
+
+
 export default function App() {
   const [date, setDate] = useState(dayjs().subtract(1, 'day').format('YYYY-MM-DD'));
   const [testMode, setTestMode] = useState(false);
   const [filters, setFilters] = useState({ burning: true, flooding: true });
   const center = useMemo(() => [30.2672, -97.7431], []);
+  const [ripples, setRipples] = useState([]);
+
+  const addRipple = (x, y) => {
+    const id = Math.random().toString(36).slice(2);
+    setRipples(rs => [...rs, { id, x, y }]);
+    // remove after animation completes
+    setTimeout(() => setRipples(rs => rs.filter(r => r.id !== id)), 750);
+  };
 
   return (
     <div style={{height: '100vh', width: '100vw', display: 'flex', flexDirection: 'column'}}>
@@ -207,9 +231,27 @@ export default function App() {
       </div>
 
       {/* Map */}
-      <div style={{flex: 1}}>
-        <MapContainer center={center} zoom={5} style={{height: '100%', width: '100%'}}>
-          <MapClickHandler enabled={testMode}/>
+      <div style={{ flex: 1, position: 'relative' }}>
+        {/* scoped CSS for ripple */}
+        <style>{`
+          .ripple-layer { position:absolute; inset:0; pointer-events:none; z-index: 500; }
+          .ripple {
+            position:absolute; width:14px; height:14px; border-radius:9999px;
+            border:2px solid #1976d2; opacity:.8; transform:translate(-50%,-50%) scale(0);
+            animation: rl-ripple 700ms ease-out forwards;
+          }
+          @keyframes rl-ripple {
+            to { transform:translate(-50%,-50%) scale(8); opacity:0; }
+          }
+        `}</style>
+
+        <MapContainer
+          center={center}
+          zoom={5}
+          style={{ position: 'absolute', inset: 0, cursor: 'pointer' }}  // pointer cursor
+        >
+          <ClickRippleLayer onClickAtPx={addRipple} speakEnabled={testMode} />
+
           <LayersControl position="topright">
             {/* Base maps */}
             <BaseLayer checked name="OpenStreetMap">
@@ -226,6 +268,9 @@ export default function App() {
                 attribution='Imagery: NASA EOSDIS GIBS'
                 tileSize={256}
                 crossOrigin
+                maxNativeZoom={9}  // True Color supports Level9
+                maxZoom={9}
+                errorTileUrl="data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw=="
               />
             </BaseLayer>
 
@@ -240,6 +285,9 @@ export default function App() {
                     attribution='Fires (Terra/MODIS): NASA EOSDIS GIBS'
                     tileSize={256}
                     crossOrigin
+                    maxNativeZoom={6}
+                    maxZoom={6}
+                    errorTileUrl="data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw=="
                   />
                 </Overlay>
                 <Overlay name="Fires: Thermal Anomalies (Night)">
@@ -250,6 +298,9 @@ export default function App() {
                     attribution='Fires (Terra/MODIS): NASA EOSDIS GIBS'
                     tileSize={256}
                     crossOrigin
+                    maxNativeZoom={6}
+                    maxZoom={6}
+                    errorTileUrl="data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw=="
                   />
                 </Overlay>
               </>
@@ -258,7 +309,6 @@ export default function App() {
             {/* FLOODING group */}
             {filters.flooding && (
               <>
-                {/* IMERG precipitation rate (proxy for current flood risk) */}
                 <Overlay checked name="Precipitation Rate (IMERG)">
                   <TileLayer
                     url={gibsUrl(LAYERS.IMERG_RATE, date, 'png')}
@@ -267,10 +317,11 @@ export default function App() {
                     attribution='GPM IMERG Precipitation Rate: NASA EOSDIS GIBS'
                     tileSize={256}
                     crossOrigin
+                    maxNativeZoom={6}
+                    maxZoom={6}
                   />
                 </Overlay>
 
-                {/* FEMA NFHL (US only; regulatory/long-term hazard) */}
                 <Overlay name="FEMA Flood Hazard Zones (US)">
                   <TileLayer
                     url={FEMA_NFHL}
@@ -281,7 +332,6 @@ export default function App() {
                   />
                 </Overlay>
 
-                {/* Optional: when NRT flood extent layer id is available in your GIBS endpoint */}
                 {false && (
                   <Overlay name="NRT Flood Extent (MODIS/VIIRS)">
                     <TileLayer
@@ -298,7 +348,15 @@ export default function App() {
             )}
           </LayersControl>
         </MapContainer>
+
+        {/* Ripple overlay */}
+        <div className="ripple-layer">
+          {ripples.map(r => (
+            <span key={r.id} className="ripple" style={{ left: r.x, top: r.y }} />
+          ))}
+        </div>
       </div>
+
 
       <div style={{padding: 8, fontSize: 12, color: '#444', background: '#fafafa', borderTop: '1px solid #ddd'}}>
         <b>Reading tips:</b> Fire overlays = active hotspots (MODIS). IMERG = where it’s raining hard (flood risk proxy). FEMA = areas prone to flood (U.S.). Pick the date to explore recent days.
