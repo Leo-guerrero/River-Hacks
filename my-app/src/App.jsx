@@ -152,12 +152,11 @@ function MapClickHandler({ enabled }) {
   return null;
 }
 
-function ClickRippleLayer({ onClickAtPx, speakEnabled }) {
+function ClickRippleLayer({ onClickAtPx, speakEnabled, onClickLatLng }) {
   useMapEvents({
     click: async (e) => {
-      // Always show ripple
       onClickAtPx(e.containerPoint.x, e.containerPoint.y);
-      // Optionally speak
+      if (onClickLatLng) onClickLatLng(e.latlng.lat, e.latlng.lng);
       if (speakEnabled) {
         const { lat, lng } = e.latlng;
         await speakTestEmergencyAt(lat, lng);
@@ -167,6 +166,81 @@ function ClickRippleLayer({ onClickAtPx, speakEnabled }) {
   return null;
 }
 
+// Weather code → text (Open-Meteo WMO)
+const WX = {
+  0: "Clear", 1: "Mainly clear", 2: "Partly cloudy", 3: "Overcast",
+  45: "Fog", 48: "Rime fog",
+  51: "Light drizzle", 53: "Drizzle", 55: "Heavy drizzle",
+  56: "Freezing drizzle", 57: "Freezing drizzle+",
+  61: "Light rain", 63: "Rain", 65: "Heavy rain",
+  66: "Freezing rain", 67: "Freezing rain+",
+  71: "Light snow", 73: "Snow", 75: "Heavy snow", 77: "Snow grains",
+  80: "Light showers", 81: "Showers", 82: "Heavy showers",
+  85: "Snow showers", 86: "Snow showers+",
+  95: "Thunderstorm", 96: "Thunderstorm w/ hail", 99: "Thunderstorm w/ heavy hail",
+};
+
+async function reversePlace(lat, lon) {
+  const url = `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&zoom=10&addressdetails=1`;
+  const res = await fetch(url, { headers: { Accept: "application/json" } });
+  const data = await res.json();
+  const a = data?.address || {};
+  const city = a.city || a.town || a.village || a.hamlet || a.county || "";
+  const state = a.state || a.region || "";
+  const cc = (a.country_code || "").toUpperCase();
+  const placeName = [city, state, cc].filter(Boolean).join(", ");
+  return { placeName, cc };
+}
+
+async function fetchWeather(lat, lon) {
+  // Open-Meteo: current weather + auto timezone (no key)
+  const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current_weather=true&timezone=auto`;
+  const res = await fetch(url);
+  const j = await res.json();
+  const cw = j.current_weather || {};
+  return {
+    temperature: cw.temperature,          // °C
+    windspeed: cw.windspeed,              // km/h
+    weathercode: cw.weathercode,          // WMO code
+    timezone: j.timezone || "UTC",
+  };
+}
+
+// Simple weather info card
+function WeatherInfoCard({ box, onClose }) {
+  if (!box) return null;
+  const { loading, error, placeName, temperature, windspeed, weathercode, timezone, clickedAt } = box;
+
+  const timeStr = timezone
+    ? new Intl.DateTimeFormat([], { hour: "2-digit", minute: "2-digit", timeZone: timezone }).format(clickedAt || new Date())
+    : new Intl.DateTimeFormat([], { hour: "2-digit", minute: "2-digit" }).format(clickedAt || new Date());
+
+  return (
+    <div style={{
+      position: "absolute", top: 10, left: 10, zIndex: 600,
+      background: "white", border: "1px solid #ddd", borderRadius: 10,
+      padding: "10px 12px", boxShadow: "0 4px 16px rgba(0,0,0,.12)", minWidth: 220
+    }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+        <strong style={{ fontSize: 14 }}>Local Weather</strong>
+        <button onClick={onClose} style={{ border: "none", background: "transparent", cursor: "pointer" }}>✕</button>
+      </div>
+      {loading && <div style={{ fontSize: 12, color: "#666" }}>Loading…</div>}
+      {error && <div style={{ fontSize: 12, color: "#b00020" }}>{error}</div>}
+      {!loading && !error && (
+        <div style={{ fontSize: 13, lineHeight: 1.35 }}>
+          <div style={{ marginBottom: 4, color: "#333" }}>{placeName || "Selected location"}</div>
+          <div style={{ marginBottom: 6, color: "#555" }}>Local time: <b>{timeStr}</b></div>
+          <div>Temp: <b>{Math.round(temperature)}°C</b></div>
+          <div>Wind: <b>{Math.round(windspeed)} km/h</b></div>
+          <div>Conditions: <b>{WX[weathercode] || "—"}</b></div>
+          <div style={{ marginTop: 6, fontSize: 11, color: "#777" }}>Powered by Open-Meteo</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 
 export default function App() {
   const [date, setDate] = useState(dayjs().subtract(1, 'day').format('YYYY-MM-DD'));
@@ -174,6 +248,7 @@ export default function App() {
   const [filters, setFilters] = useState({ burning: true, flooding: true });
   const center = useMemo(() => [30.2672, -97.7431], []);
   const [ripples, setRipples] = useState([]);
+  const [weatherBox, setWeatherBox] = useState(null);
 
   const addRipple = (x, y) => {
     const id = Math.random().toString(36).slice(2);
@@ -181,6 +256,23 @@ export default function App() {
     // remove after animation completes
     setTimeout(() => setRipples(rs => rs.filter(r => r.id !== id)), 750);
   };
+  const handleWeatherClick = async (lat, lon) => {
+  setWeatherBox({ loading: true, clickedAt: new Date() });
+  try {
+    const [place, w] = await Promise.all([reversePlace(lat, lon), fetchWeather(lat, lon)]);
+    setWeatherBox({
+      loading: false,
+      placeName: place.placeName,
+      temperature: w.temperature,
+      windspeed: w.windspeed,
+     weathercode: w.weathercode,
+      timezone: w.timezone,
+      clickedAt: new Date(),
+        });
+      } catch (e) {
+        setWeatherBox({ loading: false, error: "Couldn’t fetch weather right now." });
+      }
+    };
 
   return (
     <div style={{height: '100vh', width: '100vw', display: 'flex', flexDirection: 'column'}}>
@@ -233,7 +325,7 @@ export default function App() {
       {/* Map */}
       <div style={{ flex: 1, position: 'relative' }}>
         {/* scoped CSS for ripple */}
-        <style>{`
+          <style>{`
           .ripple-layer { position:absolute; inset:0; pointer-events:none; z-index: 500; }
           .ripple {
             position:absolute; width:14px; height:14px; border-radius:9999px;
@@ -243,14 +335,19 @@ export default function App() {
           @keyframes rl-ripple {
             to { transform:translate(-50%,-50%) scale(8); opacity:0; }
           }
-        `}</style>
+         `}</style>
 
         <MapContainer
           center={center}
           zoom={5}
           style={{ position: 'absolute', inset: 0, cursor: 'pointer' }}  // pointer cursor
+          zoomControl={false}
         >
-          <ClickRippleLayer onClickAtPx={addRipple} speakEnabled={testMode} />
+           <ClickRippleLayer
+             onClickAtPx={addRipple}
+             speakEnabled={testMode}
+            onClickLatLng={handleWeatherClick}
+           />
 
           <LayersControl position="topright">
             {/* Base maps */}
@@ -355,6 +452,9 @@ export default function App() {
             <span key={r.id} className="ripple" style={{ left: r.x, top: r.y }} />
           ))}
         </div>
+
+          {/* Weather card */}
+        <WeatherInfoCard box={weatherBox} onClose={() => setWeatherBox(null)} />
       </div>
 
 
