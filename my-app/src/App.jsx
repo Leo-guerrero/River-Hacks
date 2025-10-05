@@ -1,14 +1,18 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from '/vite.svg'
 import './App.css'
+import ThreeDPage from './pages/ThreeDPage'
+import { Route, Routes } from 'react-router-dom'
+import HomePage from './pages/HomePage'
 
 function App() {
-  const [count, setCount] = useState(0)
+  
 
   return (
     <>
-      <div>Fuck Josue</div>
+    <Routes>
+      <Route path="/" element={ <HomePage/> }/>
+      <Route path="/GUI" element={<ThreeDPage/>}/>
+    </Routes>
+      
     </>
   )
 }
